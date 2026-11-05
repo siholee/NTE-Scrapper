@@ -1,0 +1,69 @@
+{
+  "name": "nte-scrapper",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "소설 회차를 TXT로 보관하고 EPUB으로 내보내는 로컬 프로그램",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js",
+    "test:live": "node test/live.js",
+    "start:mcp": "node src/server.js",
+    "build:win": "electron-builder --win nsis --x64 --publish never"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "cheerio": "1.1.2",
+    "fflate": "0.8.2",
+    "playwright": "1.56.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "electron": "42.11.18",
+    "electron-builder": "26.18.0",
+    "fast-xml-parser": "5.11.2"
+  },
+  "main": "desktop/main.cjs",
+  "author": "NTE Scrapper contributors",
+  "license": "MIT",
+  "build": {
+    "appId": "com.ntescrapper.desktop",
+    "productName": "NTE Scrapper",
+    "asar": false,
+    "files": [
+      "desktop/**/*",
+      "src/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist-release"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "signAndEditExecutable": false
+    },
+    "npmRebuild": false,
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "artifactName": "NTE-Scrapper-Setup-${version}-win-x64.exe",
+      "createDesktopShortcut": true
+    },
+    "extraFiles": [
+      {
+        "from": "desktop/mcp.cmd",
+        "to": "NTE-MCP.cmd"
+      }
+    ]
+  }
+}

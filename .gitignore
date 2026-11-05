@@ -1,0 +1,9 @@
+node_modules/
+data/
+work/
+*.log
+
+dist/
+*.exe
+.env*
+dist-release/

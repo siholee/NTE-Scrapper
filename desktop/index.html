@@ -1,0 +1,7 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'none'"><title>NTE Scrapper</title><link rel="stylesheet" href="style.css"></head><body><main>
+<div class="eyebrow">TXT + EPUB · WINDOWS</div><h1>NTE Scrapper</h1><p class="intro">소설 주소를 입력하면 순서대로 저장합니다.</p>
+<form id="form"><label for="url">작품 URL</label><div class="input-row"><input id="url" type="url" placeholder="https://…" required autofocus autocomplete="off"><button id="start" type="submit">확인</button></div></form>
+<div class="hint">회차 요청 간격 7초 · 저장된 회차는 이어받기 · AI 없이 실행</div>
+<section aria-live="polite"><div class="status-head"><strong id="title">수집 준비</strong><span id="count"></span></div><progress id="progress" max="1" value="0"></progress><p id="message">주소를 입력하고 확인을 눌러주세요.</p><div class="actions"><button id="resume" hidden>이어받기 / 계속</button><button id="stop" hidden>중단</button><button id="folder" class="secondary">저장 폴더 열기</button></div></section>
+<p class="footer">Bookkor · /novel/ 형식 지원<br>Chrome 또는 Edge 필요. 인증 화면이 나오면 브라우저에서 직접 완료해주세요.<br>창을 닫아도 수집은 계속되며, 중단 버튼으로 멈출 수 있습니다.</p>
+</main><script src="renderer.js"></script></body></html>

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { BrowserReader, loadCatalog, normalizeUrl, sleep, chapterUrl } from './source.js';
 import { Library, atomicWrite } from './storage.js';
+import { MIN_INTERVAL_MS, MAX_INTERVAL_MS } from './pacing.js';
 
 const activeStates = new Set(['queued', 'discovering', 'running', 'waiting', 'exporting', 'cancelling']);
 const now = () => new Date().toISOString();
@@ -47,7 +48,10 @@ export class Engine {
     return book;
   }
   async inspect({ url }) {
-    const catalog = await this.catalogLoader(url);
+    const reader = new BrowserReader(path.join(this.root, 'inspection'));
+    let catalog;
+    try { catalog = await this.catalogLoader(url, { reader }); }
+    finally { await reader.close(); }
     // Inspection does not overwrite a manifest while the worker is writing it.
     const saved = (await this.library.list()).find(b => this.library.folder(b) === this.library.folder(catalog));
     return { ...this.summary({ ...catalog, saved: saved?.saved || {}, exports: saved?.exports || {} }), chapters: catalog.chapters.map(ch => ({ ...ch, saved: !!saved?.saved[ch.id] })) };
@@ -57,11 +61,11 @@ export class Engine {
     if (!job) throw new Error('작업을 찾을 수 없습니다. nte_status를 인자 없이 호출해 작업 ID를 확인해주세요.');
     return structuredClone(job);
   }
-  async start({ url, start = 1, end, delayMs = 7000 }) {
+  async start({ url, start = 1, end, delayMs = MIN_INTERVAL_MS }) {
     const normalized = normalizeUrl(url);
     if (!Number.isInteger(start) || start < 1 || (end !== undefined && (!Number.isInteger(end) || end < start))) throw new Error('수집 범위는 1 이상의 정수이며 마지막 회차는 시작 회차 이상이어야 합니다.');
-    if (!Number.isInteger(delayMs) || delayMs < 0 || delayMs > 30000) throw new Error('요청 간격은 7000~30000ms입니다.');
-    delayMs = Math.max(7000, delayMs);
+    if (!Number.isInteger(delayMs) || delayMs < 0 || delayMs > MAX_INTERVAL_MS) throw new Error('요청 간격은 7~3600초로 입력해주세요.');
+    delayMs = Math.max(MIN_INTERVAL_MS, delayMs);
     if (this.active) {
       const existing = this.jobs.get(this.active);
       if (existing.url === normalized.url && existing.start === start && existing.end === end) return this.getJob(existing.jobId);
@@ -75,7 +79,7 @@ export class Engine {
     return this.getJob(job.jobId);
   }
   launch(job) {
-    job.delayMs = Math.max(7000, job.delayMs || 7000);
+    job.delayMs = Math.max(MIN_INTERVAL_MS, job.delayMs || MIN_INTERVAL_MS);
     this.active = job.jobId; this.signal = new AbortController();
     this.running = this.run(job, this.signal.signal).catch(error => { console.error('[NTE job fatal]', error.message); }).finally(() => {
       if (this.active === job.jobId) { this.active = null; this.signal = null; this.resumeWait = null; }
@@ -84,7 +88,10 @@ export class Engine {
   async run(job, signal) {
     try {
       await this.update(job, { status: 'discovering', error: null, current: null, completed: 0, downloaded: 0, reused: 0, exports: null, message: '전체 회차 목록을 확인하고 있습니다.' });
-      const catalog = await this.catalogLoader(job.url, { signal });
+      const catalog = await this.catalogLoader(job.url, {
+        signal, delayMs: job.delayMs, reader: this.reader,
+        onProgress: message => { job.message = message; },
+      });
       signal.throwIfAborted();
       const book = await this.library.merge(catalog);
       const chosen = book.chapters.filter(ch => ch.number >= job.start && (job.end === undefined || ch.number <= job.end));
@@ -93,22 +100,18 @@ export class Engine {
       await this.library.persist(book);
       await this.update(job, { bookKey: path.basename(this.library.folder(book)), title: book.title, total: chosen.length, bookTotal: book.chapters.length, directory: this.library.folder(book), status: 'running', message: `${chosen.length}개 회차 수집 시작` });
       this.log(job, `${book.title}: ${chosen.length}개 회차`);
-      let lastRequest = 0;
       for (const chapter of chosen) {
         signal.throwIfAborted();
         await this.update(job, { current: { id: chapter.id, number: chapter.number, title: chapter.title, url: chapterUrl(book, chapter) }, message: `${chapter.label} 확인 중` });
         const existing = await this.library.readChapter(book, chapter);
         if (existing) { job.reused++; }
         else {
-          const remaining = job.delayMs - (Date.now() - lastRequest);
-          if (remaining > 0) await sleep(remaining);
-          signal.throwIfAborted();
-          lastRequest = Date.now();
           let lastError;
           for (let attempt = 0; attempt < 3; attempt++) {
             try {
               const text = await this.reader.read(book, chapter, {
                 signal,
+                delayMs: job.delayMs,
                 onWaiting: message => { this.log(job, message); },
                 waitForResume: async () => {
                   await this.update(job, { status: 'waiting', message: '본문이 표시되지 않았습니다. nte_diagnose로 확인하세요. 인증·로그인이 필요하면 사용자가 브라우저에서 직접 완료한 뒤 nte_continue를 호출하세요.' });
@@ -211,7 +214,7 @@ export class Engine {
   }
   async dispatch(method, args = {}) {
     switch (method) {
-      case 'health': return { name: 'NTE Scrapper', version: '2.0.0', ready: true, root: this.root, activeJobId: this.active };
+      case 'health': return { name: 'NTE Scrapper', version: '2.1.0', ready: true, root: this.root, activeJobId: this.active };
       case 'inspect': return this.inspect(args);
       case 'start': return this.start(args);
       case 'status': return this.status(args);

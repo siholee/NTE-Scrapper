@@ -14,7 +14,7 @@ function render(job) {
 async function invoke(operation) {
   try { const r = await operation(); if (!r.ok) throw new Error(r.error); render(r.value); } catch (e) { $('message').textContent = e.message; }
 }
-$('form').addEventListener('submit', async event => { event.preventDefault(); $('start').disabled = true; await invoke(() => window.nte.start($('url').value.trim())); if (!current || !active.has(current.status)) $('start').disabled = false; });
+$('form').addEventListener('submit', async event => { event.preventDefault(); $('start').disabled = true; await invoke(() => window.nte.start($('url').value.trim(), $('delay').valueAsNumber)); $('start').disabled = !!current && (active.has(current.status) || current.status === 'waiting'); });
 $('resume').onclick = () => current && invoke(() => window.nte.resume(current.jobId));
 $('stop').onclick = () => current && invoke(() => window.nte.cancel(current.jobId));
 $('folder').onclick = () => window.nte.folder();

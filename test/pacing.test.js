@@ -14,3 +14,13 @@ test('cancelled queued requests do not consume a request slot', async () => {
   await assert.rejects(pacer.take(controller.signal), /stopped/);
   await pacer.take(); assert.equal(time, 7000);
 });
+test('a selected 20-second interval applies to every queued request', async () => {
+  let time = 0;
+  const pacer = new RequestPacer({ now: () => time, wait: async ms => { time += ms; } });
+  await pacer.take(undefined, 20_000);
+  assert.equal(time, 0);
+  await pacer.take(undefined, 20_000);
+  assert.equal(time, 20_000);
+  await pacer.take(undefined, 20_000);
+  assert.equal(time, 40_000);
+});

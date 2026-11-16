@@ -2,6 +2,7 @@ import { load } from 'cheerio';
 import { chromium } from 'playwright';
 import path from 'node:path';
 import { networkPacer } from './pacing.js';
+import { isMarumaru, parseMarumaruList } from './marumaru.js';
 import { isBookkor, normalizeBookkorUrl, parseBookkorCatalog, readBookkorRenderedText } from './bookkor.js';
 
 export const EXAMPLE_URL = 'https://toki35.com/novel/63829';
@@ -58,12 +59,12 @@ export function parseCatalog(html, url) {
   return { ...normalizeUrl(url), title, author, description, initial };
 }
 
-export async function fetchText(url, { signal, accept = 'text/html', retry = 2 } = {}) {
+export async function fetchText(url, { signal, accept = 'text/html', retry = 2, delayMs } = {}) {
   let last;
   for (let attempt = 0; attempt <= retry; attempt++) {
     signal?.throwIfAborted();
     try {
-      await networkPacer.take(signal);
+      await networkPacer.take(signal, delayMs);
       const response = await fetch(url, {
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/156.0.0.0 Safari/537.36', Accept: accept },
         signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000),
@@ -84,14 +85,18 @@ export async function fetchText(url, { signal, accept = 'text/html', retry = 2 }
   throw last;
 }
 
-export async function loadCatalog(url, { signal, onProgress = () => {} } = {}) {
+export async function loadCatalog(url, { signal, delayMs, reader, onProgress = () => {} } = {}) {
   const normalized = normalizeUrl(url);
+  if (isMarumaru(new URL(normalized.url).hostname)) {
+    if (!reader) throw new Error('마루마루 작품 목록을 열려면 Chrome 또는 Edge가 필요합니다.');
+    return reader.readMarumaruCatalog(normalized, { signal, delayMs, onProgress });
+  }
   if (normalized.source === 'bookkor') {
-    const book = parseBookkorCatalog(await fetchText(normalized.url, { signal }), normalized.url);
+    const book = parseBookkorCatalog(await fetchText(normalized.url, { signal, delayMs }), normalized.url);
     onProgress(`회차 목록 ${book.chapters.length}개 확인`);
     return book;
   }
-  const book = parseCatalog(await fetchText(normalized.url, { signal }), normalized.url);
+  const book = parseCatalog(await fetchText(normalized.url, { signal, delayMs }), normalized.url);
   const chapters = new Map();
   let window = book.initial;
   const cursors = new Set();
@@ -106,7 +111,7 @@ export async function loadCatalog(url, { signal, onProgress = () => {} } = {}) {
     cursors.add(window.olderCursor);
     await sleep(700);
     const query = new URLSearchParams({ direction: 'older', cursor: window.olderCursor });
-    const raw = await fetchText(`${book.origin}/api/novel/${book.id}/episodes/window?${query}`, { signal, accept: 'application/json' });
+    const raw = await fetchText(`${book.origin}/api/novel/${book.id}/episodes/window?${query}`, { signal, delayMs, accept: 'application/json' });
     try { window = JSON.parse(raw); } catch { throw new Error('회차 목록 응답을 읽을 수 없습니다.'); }
     if (!window.ok || !Array.isArray(window.items) || typeof window.hasOlder !== 'boolean') throw new Error(window.error || '회차 목록 응답 형식이 변경되었습니다.');
   }
@@ -123,7 +128,7 @@ export function chapterUrl(book, chapter) {
 }
 
 export class BrowserReader {
-  constructor(dataDir) { this.profile = path.join(dataDir, 'browser-profile'); this.context = null; this.page = null; this.launching = null; }
+  constructor(dataDir) { this.profile = path.join(dataDir, 'browser-profile'); this.context = null; this.page = null; this.launching = null; this.browser = null; }
   async open() {
     if (this.context && this.page && !this.page.isClosed()) return this.page;
     if (this.launching) return this.launching;
@@ -146,7 +151,53 @@ export class BrowserReader {
     }
     throw new Error(`Chrome 또는 Edge를 실행하지 못했습니다. 브라우저가 설치되어 있는지 확인해주세요. ${errors[0]?.split('\n')[0] || ''}`);
   }
-  async navigate(book, chapter) {
+  async readMarumaruCatalog(book, { signal, delayMs, onProgress }) {
+    let launchError;
+    for (const channel of ['chrome', 'msedge', undefined]) {
+      try {
+        this.browser = await chromium.launch({ channel, headless: false });
+        break;
+      } catch (error) { launchError = error; }
+    }
+    if (!this.browser) throw launchError;
+    this.context = await this.browser.newContext({ acceptDownloads: false });
+    this.page = await this.context.newPage();
+    this.context.on('page', page => {
+      if (page !== this.page) page.close().catch(() => {});
+    });
+    const page = await this.open();
+    const chapters = new Map();
+    const visited = new Set();
+    const firstPage = new URL(book.url);
+    firstPage.searchParams.set('order', 'desc');
+    let url = firstPage.href;
+    let catalog;
+    while (url) {
+      if (visited.has(url) || visited.size >= 500) throw new Error('마루마루 다음 목록 페이지가 반복됩니다.');
+      visited.add(url);
+      await networkPacer.take(signal, delayMs);
+      const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      if (response?.status() >= 400) throw new Error(`마루마루 목록 HTTP ${response.status()}`);
+      try {
+        await page.locator('main .ep-list-v2 a.ep-row-v2-link').first().waitFor({ state: 'attached', timeout: 15000 });
+      } catch {
+        throw new Error(`마루마루 회차 목록을 열지 못했습니다. 브라우저에 표시된 페이지: ${await page.title()}`);
+      }
+      signal?.throwIfAborted();
+      const result = parseMarumaruList(await page.content(), book, page.url());
+      catalog ??= result;
+      if (catalog.total !== result.total || catalog.title !== result.title) throw new Error('수집 도중 마루마루 회차 목록이 변경됐습니다. 이어받기를 눌러 목록을 다시 확인해주세요.');
+      for (const chapter of result.chapters) chapters.set(chapter.id, chapter);
+      onProgress(`목록 ${chapters.size}/${catalog.total}개 확인`);
+      url = result.next;
+    }
+    const ordered = [...chapters.values()].sort((a, b) => a.number - b.number);
+    if (ordered.length !== catalog.total || ordered.some((chapter, index) => chapter.number !== index + 1)) {
+      throw new Error(`마루마루 목록에 누락 또는 중복이 있습니다. 확인한 목록 항목 ${ordered.length}/${catalog.total}개`);
+    }
+    return { ...book, source: 'marumaru', title: catalog.title, author: catalog.author, description: catalog.description, chapters: ordered };
+  }
+  async navigate(book, chapter, { signal, delayMs } = {}) {
     const page = await this.open();
     let navigationStatus = 0;
     const observe = response => {
@@ -154,6 +205,7 @@ export class BrowserReader {
     };
     page.on('response', observe);
     try {
+      await networkPacer.take(signal, delayMs);
       const response = await page.goto(chapterUrl(book, chapter), { waitUntil: 'domcontentloaded', timeout: 45000 });
       if (response && response.status() >= 400) navigationStatus = response.status();
       else return page;
@@ -164,12 +216,13 @@ export class BrowserReader {
     error.status = navigationStatus;
     throw error;
   }
-  async read(book, chapter, { signal, onWaiting = () => {}, waitForResume } = {}) {
+  async read(book, chapter, { signal, delayMs, onWaiting = () => {}, waitForResume } = {}) {
     let page;
     for (let attempt = 0; attempt < 2; attempt++) {
       signal?.throwIfAborted();
-      try { await networkPacer.take(signal); page = await this.navigate(book, chapter); break; }
+      try { page = await this.navigate(book, chapter, { signal, delayMs }); break; }
       catch (error) {
+        signal?.throwIfAborted();
         if ([401, 403, 404, 410].includes(error.status)) throw error;
         if (attempt === 1) throw new Error(`회차 페이지를 열지 못했습니다: ${error.message.split('\n')[0]}`);
         await sleep(1500);
@@ -180,6 +233,19 @@ export class BrowserReader {
     for (;;) {
       signal?.throwIfAborted();
       if (!page || page.isClosed()) throw new Error('본문 브라우저가 닫혔습니다. 수집을 다시 시작하면 이어받습니다.');
+      if (book.source === 'marumaru') {
+        if (new URL(page.url()).pathname === new URL(chapterUrl(book, chapter)).pathname) {
+          const text = await page.locator('main.vw-main .theme-viewer-novel:visible').allInnerTexts();
+          const content = text.map(part => part.trim()).filter(Boolean).join('\n\n');
+          if (content.length >= 20) return content;
+          const notices = await page.locator('main.vw-main .vw-empty:visible').allInnerTexts();
+          if (notices.some(notice => notice.includes('본문을 아직 가져오지 못했습니다'))) {
+            const error = new Error(`${chapter.label} (${chapter.title}) 본문을 마루마루에서 제공하지 않습니다.`);
+            error.status = 404;
+            throw error;
+          }
+        }
+      } else {
       const content = book.source === 'bookkor'
         ? await page.evaluate(readBookkorRenderedText, { expectedUrl: chapterUrl(book, chapter), bookSlug: book.slug, episodeSlug: chapter.slug })
         : await page.evaluate(({ novelId, episodeId }) => {
@@ -206,6 +272,7 @@ export class BrowserReader {
         return '';
       }, { novelId: book.id, episodeId: chapter.id });
       if (content.trim().length >= 20) return content.replace(/\r\n?/g, '\n').replace(/\u0000/g, '').trim();
+      }
       if (Date.now() - startedAt >= 8000) {
         const notices = await page.locator('.novel-loading').allTextContents();
         if (notices.some(text => /일시적 오류가 발생|잠시 후 다시 시도|temporarily unavailable/i.test(text))) {
@@ -225,5 +292,10 @@ export class BrowserReader {
       await sleep(400);
     }
   }
-  async close() { const context = this.context; this.context = null; this.page = null; if (context) await context.close().catch(() => {}); }
+  async close() {
+    const { context, browser } = this;
+    this.context = null; this.browser = null; this.page = null;
+    if (browser) await browser.close().catch(() => {});
+    else if (context) await context.close().catch(() => {});
+  }
 }

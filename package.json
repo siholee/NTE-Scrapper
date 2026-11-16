@@ -1,6 +1,6 @@
 {
   "name": "nte-scrapper",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
   "description": "소설 회차를 TXT로 보관하고 EPUB으로 내보내는 로컬 프로그램",

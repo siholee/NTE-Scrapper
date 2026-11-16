@@ -10,7 +10,7 @@ else {
   app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
   app.whenReady().then(async () => {
     const { rpc } = await import(moduleUrl('bridge.js'));
-    const operations = { start: args => rpc('start', { url: String(args.url || ''), delayMs: 7000 }), status: () => rpc('status'), resume: args => rpc('continue', { jobId: args.jobId }), cancel: args => rpc('cancel', { jobId: args.jobId }) };
+    const operations = { start: ({ url, delaySeconds }) => rpc('start', { url, delayMs: delaySeconds * 1000 }), status: () => rpc('status'), resume: args => rpc('continue', { jobId: args.jobId }), cancel: args => rpc('cancel', { jobId: args.jobId }) };
     for (const [name, operation] of Object.entries(operations)) ipcMain.handle('nte:' + name, async (event, args = {}) => {
       if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error('Invalid sender');
       try { return { ok: true, value: await operation(args) }; } catch (error) { return { ok: false, error: error.message }; }
@@ -20,7 +20,7 @@ else {
       const fs = require('node:fs/promises'); const folder = path.join(process.env.NTE_DATA_DIR, 'library');
       await fs.mkdir(folder, { recursive: true }); return shell.openPath(folder);
     });
-    win = new BrowserWindow({ width: 650, height: 560, minWidth: 540, minHeight: 440, title: 'NTE Scrapper', autoHideMenuBar: true, backgroundColor: '#f5f7fa', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true } });
+    win = new BrowserWindow({ width: 650, height: 610, minWidth: 540, minHeight: 440, title: 'NTE Scrapper', autoHideMenuBar: true, backgroundColor: '#f5f7fa', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true } });
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     win.webContents.on('will-navigate', event => event.preventDefault());
     await win.loadFile(path.join(__dirname, 'index.html'));

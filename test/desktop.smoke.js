@@ -8,7 +8,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 const root = path.join(projectRoot, 'work', 'desktop-smoke-' + Date.now()); await fs.mkdir(root, { recursive: true });
 const body = '브라우저에서 정상 표시된 시험용 본문입니다.\n\n두 번째 문단과 한글 저장을 확인합니다.';
+const timestamps = [];
 const server = http.createServer((req,res) => {
+  if (/^\/novel\/42(?:\/\d+)?$/.test(req.url)) timestamps.push(performance.now());
   res.setHeader('Content-Type','text/html; charset=utf-8');
   if (req.url === '/novel/42') {
     const window = { items: [1,2].map(n => ({id:String(100+n),number:n,title:'시험 회차 '+n})), hasOlder:false };
@@ -24,9 +26,14 @@ let app;
 try {
   app=await electron.launch({executablePath:exe,args,env}); const page=await app.firstWindow(); await page.waitForSelector('#url');
   await page.locator('#url').fill(`http://127.0.0.1:${server.address().port}/novel/42`);
+  await page.locator('#delay').fill('20');
   await page.locator('#start').click();
   await page.waitForFunction(()=>document.querySelector('#message').textContent.includes('전체 TXT와 EPUB 저장이 완료'),{},{timeout:65000});
   assert.equal(await page.locator('#count').textContent(),'2 / 2');
+  assert.equal(timestamps.length, 3);
+  const intervals = timestamps.slice(1).map((time, i) => time - timestamps[i]);
+  assert.ok(intervals.every(ms => ms >= 19_950), JSON.stringify(intervals));
+  console.log('Request intervals in ms:', intervals.map(Math.round));
   await page.screenshot({path:path.join(root,'gui.png')});
   console.log('GUI URL → 확인 → 2회차 TXT/EPUB 완료:',root);
   const gui=app; await gui.evaluate(({app})=>app.exit(0)).catch(()=>{}); gui.process().kill(); app=null;

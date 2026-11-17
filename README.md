@@ -16,6 +16,12 @@ Releases에서 EXE를 다운로드해 실행하세요. 작품 URL과 요청 간�
 
 결과 위치는 **저장 폴더 열기** 버튼으로 확인하세요. 기본값은 앱 사용자 데이터 폴더의 `data/library`입니다. `NTE_DATA_DIR` 환경변수로 경로를 지정할 수 있습니다. 기존 Node MCP와 데이터를 공유하려면 같은 경로를 지정하세요.
 
+### Google Drive에 EPUB 보내기
+
+Google Drive for desktop에 로그인한 뒤 **Google Drive 동기화 폴더 선택**에서 파일 탐색기에 표시되는 대상 폴더를 선택하세요. 이후 시작한 작업은 TXT와 EPUB 생성이 끝나면 EPUB을 그 폴더에 복사합니다. 앱을 닫아도 작업 프로세스가 복사합니다. 클라우드 업로드 진행률은 Google Drive for desktop에서 확인하세요.
+
+복사에 실패해도 생성한 TXT와 EPUB은 저장 폴더에 남습니다. 동기화 폴더를 확인한 뒤 **EPUB 복사 재시도**를 누르면 수집 없이 다시 복사합니다. **해제**는 이후에 시작하는 작업부터 적용됩니다. 같은 데이터 폴더를 사용하는 MCP 작업도 이 설정을 따릅니다. 연결된 Google Drive 도구를 사용하는 MCP 클라이언트에서는 완료 응답의 `exports.epubPath`로 지정 Drive 폴더에 직접 업로드할 수도 있습니다.
+
 ## MCP
 
 설치 폴더의 `NTE-MCP.cmd`를 MCP 클라이언트의 실행 명령으로 지정하면 창 없이 stdio MCP 서버로 동작합니다. 별도 Node.js 설치는 필요 없습니다. GUI에는 AI가 필요하지 않으며 MCP는 선택 사항입니다.

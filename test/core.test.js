@@ -108,6 +108,55 @@ test('a failed initial checkpoint releases the job slot for repair and retry', a
   await assert.rejects(engine.start({ url: sample().url }), /disk unavailable/);
   assert.equal(engine.active, null); assert.equal(engine.jobs.size, 0);
 });
+test('completed EPUB can be copied to a corrected Drive folder without collecting again', async t => {
+  const root = await sandbox(t);
+  const disconnected = path.join(root, 'disconnected');
+  const syncFolder = path.join(root, 'NOVEL');
+  await fs.mkdir(disconnected);
+  await fs.mkdir(syncFolder);
+  let reads = 0;
+  const engine = new Engine(root, {
+    reader: { read: async () => { reads++; return body; }, close: async () => {} },
+    catalogLoader: async () => sample(2),
+  });
+  await engine.init();
+  await engine.dispatch('drive-configure', { folder: disconnected });
+  await fs.rmdir(disconnected);
+  const { jobId } = await engine.start({ url: sample().url });
+  const result = await settled(engine, jobId);
+  assert.equal(result.status, 'completed');
+  assert.equal(result.exports.count, 2);
+  assert.equal(result.drive.status, 'failed');
+  const original = await fs.readFile(result.exports.epubPath);
+  const existing = path.join(syncFolder, result.exports.epub);
+  await fs.writeFile(existing, '기존 파일');
+  await engine.dispatch('drive-configure', { folder: syncFolder });
+  const retried = await engine.dispatch('drive-retry', { jobId });
+  assert.equal(retried.drive.status, 'copied');
+  assert.equal(path.dirname(retried.drive.path), syncFolder);
+  assert.deepEqual(await fs.readFile(retried.drive.path), original);
+  assert.equal(await fs.readFile(existing, 'utf8'), '기존 파일');
+  assert.equal(reads, 2);
+});
+test('configured Drive copies only the exported EPUB automatically', async t => {
+  const root = await sandbox(t);
+  const folder = path.join(root, 'NOVEL');
+  await fs.mkdir(folder);
+  const engine = new Engine(root, {
+    reader: { read: async () => body, close: async () => {} },
+    catalogLoader: async () => sample(2),
+  });
+  await engine.init();
+  await engine.dispatch('drive-configure', { folder });
+  assert.deepEqual(await engine.dispatch('drive-settings'), { folder });
+  const { jobId } = await engine.start({ url: sample().url });
+  const result = await settled(engine, jobId);
+  assert.equal(result.drive.status, 'copied');
+  assert.deepEqual(await fs.readdir(folder), [result.exports.epub]);
+  assert.deepEqual(await fs.readFile(result.drive.path), await fs.readFile(result.exports.epubPath));
+  await engine.dispatch('drive-configure', { folder: null });
+  assert.deepEqual(await engine.dispatch('drive-settings'), { folder: null });
+});
 test('interrupted jobs become resumable and cancellation leaves no complete export', async t => {
   const folder = await sandbox(t); let entered;
   const ready = new Promise(resolve => { entered = resolve; });

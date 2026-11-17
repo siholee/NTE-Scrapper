@@ -4,3 +4,7 @@
 .interval-row label { margin: 0; }
 .interval-row input { flex: 0 1 110px; }
 .interval-row button { margin-left: auto; }
+.drive-settings { margin-bottom: 18px; }
+#drive-folder { margin: 8px 0 0; overflow-wrap: anywhere; }
+#drive-message { color: #657687; font-size: 12px; overflow-wrap: anywhere; }
+.actions { flex-wrap: wrap; }

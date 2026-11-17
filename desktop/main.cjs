@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 if (process.env.NTE_TEST_USER_DATA) app.setPath('userData', process.env.NTE_TEST_USER_DATA);
@@ -10,7 +10,24 @@ else {
   app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
   app.whenReady().then(async () => {
     const { rpc } = await import(moduleUrl('bridge.js'));
-    const operations = { start: ({ url, delaySeconds }) => rpc('start', { url, delayMs: delaySeconds * 1000 }), status: () => rpc('status'), resume: args => rpc('continue', { jobId: args.jobId }), cancel: args => rpc('cancel', { jobId: args.jobId }) };
+    const operations = {
+      start: ({ url, delaySeconds }) => rpc('start', { url, delayMs: delaySeconds * 1000 }),
+      status: () => rpc('status'),
+      resume: ({ jobId }) => rpc('continue', { jobId }),
+      cancel: ({ jobId }) => rpc('cancel', { jobId }),
+      driveSettings: () => rpc('drive-settings'),
+      driveSelect: async () => {
+        const settings = await rpc('drive-settings');
+        const selected = await dialog.showOpenDialog(win, {
+          title: 'Google Drive 동기화 폴더 선택',
+          defaultPath: settings.folder ?? undefined,
+          properties: ['openDirectory'],
+        });
+        return selected.canceled ? settings : rpc('drive-configure', { folder: selected.filePaths[0] });
+      },
+      driveClear: () => rpc('drive-configure', { folder: null }),
+      driveRetry: ({ jobId }) => rpc('drive-retry', { jobId }),
+    };
     for (const [name, operation] of Object.entries(operations)) ipcMain.handle('nte:' + name, async (event, args = {}) => {
       if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error('Invalid sender');
       try { return { ok: true, value: await operation(args) }; } catch (error) { return { ok: false, error: error.message }; }
@@ -24,6 +41,6 @@ else {
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     win.webContents.on('will-navigate', event => event.preventDefault());
     await win.loadFile(path.join(__dirname, 'index.html'));
-  }).catch(error => { require('electron').dialog.showErrorBox('실행 오류', error.message); app.quit(); });
+  }).catch(error => { dialog.showErrorBox('실행 오류', error.message); app.quit(); });
   app.on('window-all-closed', () => app.quit());
 }

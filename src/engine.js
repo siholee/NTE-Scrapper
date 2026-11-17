@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { BrowserReader, loadCatalog, normalizeUrl, sleep, chapterUrl } from './source.js';
 import { Library, atomicWrite } from './storage.js';
 import { MIN_INTERVAL_MS, MAX_INTERVAL_MS } from './pacing.js';
+import { readDriveFolder, saveDriveFolder, syncEpub } from './drive-sync.js';
 
 const activeStates = new Set(['queued', 'discovering', 'running', 'waiting', 'exporting', 'cancelling']);
 const now = () => new Date().toISOString();
@@ -15,6 +16,7 @@ export class Engine {
     this.catalogLoader = catalogLoader || loadCatalog;
     this.jobs = new Map(); this.active = null; this.signal = null; this.resumeWait = null;
     this.revision = 0;
+    this.driveRetries = new Map();
   }
   async init() {
     await fs.mkdir(path.join(this.root, 'jobs'), { recursive: true });
@@ -66,12 +68,14 @@ export class Engine {
     if (!Number.isInteger(start) || start < 1 || (end !== undefined && (!Number.isInteger(end) || end < start))) throw new Error('수집 범위는 1 이상의 정수이며 마지막 회차는 시작 회차 이상이어야 합니다.');
     if (!Number.isInteger(delayMs) || delayMs < 0 || delayMs > MAX_INTERVAL_MS) throw new Error('요청 간격은 7~3600초로 입력해주세요.');
     delayMs = Math.max(MIN_INTERVAL_MS, delayMs);
+    const folder = await readDriveFolder(this.root);
     if (this.active) {
       const existing = this.jobs.get(this.active);
       if (existing.url === normalized.url && existing.start === start && existing.end === end) return this.getJob(existing.jobId);
       throw new Error(`이미 수집 중인 작업이 있습니다: ${this.active}. 완료 후 시작해주세요.`);
     }
     const job = { jobId: randomUUID(), url: normalized.url, start, end, delayMs, status: 'queued', total: 0, completed: 0, downloaded: 0, reused: 0, current: null, error: null, exports: null, logs: [], createdAt: now(), updatedAt: now(), revision: ++this.revision, message: '수집을 준비하고 있습니다.' };
+    if (folder) job.drive = { folder, status: 'pending' };
     this.jobs.set(job.jobId, job); this.active = job.jobId;
     try { await this.persist(job); }
     catch (error) { this.jobs.delete(job.jobId); this.active = null; throw error; }
@@ -145,7 +149,9 @@ export class Engine {
       await this.update(job, { status: 'exporting', current: null, message: '모든 선택 회차의 TXT를 검증하고 EPUB을 만들고 있습니다.' });
       const exports = await this.library.export(book, chosen.map(ch => ch.id));
       this.log(job, `${exports.count}개 TXT 검증 및 EPUB 생성 완료`);
-      await this.update(job, { status: 'completed', message: `${exports.count}개 회차 TXT와 EPUB 저장 완료`, finishedAt: now(), exports: { ...exports, txtPath: path.join(this.library.folder(book), exports.txt), epubPath: path.join(this.library.folder(book), exports.epub) } });
+      const epubPath = path.join(this.library.folder(book), exports.epub);
+      const drive = job.drive ? await this.copyToDrive(epubPath, job.drive.folder) : undefined;
+      await this.update(job, { status: 'completed', message: `${exports.count}개 회차 TXT와 EPUB 저장 완료`, finishedAt: now(), exports: { ...exports, txtPath: path.join(this.library.folder(book), exports.txt), epubPath }, ...(drive && { drive }) });
     } catch (error) {
       const cancelled = signal.aborted;
       this.log(job, error.message || String(error));
@@ -153,6 +159,29 @@ export class Engine {
     } finally {
       if (job.status !== 'waiting') await this.reader.close();
     }
+  }
+  async copyToDrive(epubPath, folder) {
+    try {
+      return { folder, status: 'copied', path: await syncEpub(epubPath, folder) };
+    } catch (error) {
+      return { folder, status: 'failed', error: error.code || error.message };
+    }
+  }
+  async retryDrive({ jobId }) {
+    const job = this.jobs.get(jobId);
+    if (job?.status !== 'completed' || job.drive?.status !== 'failed') {
+      throw new Error('다시 복사할 EPUB을 찾을 수 없습니다.');
+    }
+    if (this.driveRetries.has(jobId)) return this.driveRetries.get(jobId);
+    const retry = (async () => {
+      const folder = await readDriveFolder(this.root);
+      if (!folder) throw new Error('Google Drive 동기화 폴더를 먼저 선택해주세요.');
+      const drive = await this.copyToDrive(job.exports.epubPath, folder);
+      await this.update(job, { drive });
+      return this.getJob(jobId);
+    })().finally(() => this.driveRetries.delete(jobId));
+    this.driveRetries.set(jobId, retry);
+    return retry;
   }
   async resume({ jobId }) {
     const job = this.jobs.get(jobId); if (!job) return this.getJob(jobId);
@@ -214,7 +243,10 @@ export class Engine {
   }
   async dispatch(method, args = {}) {
     switch (method) {
-      case 'health': return { name: 'NTE Scrapper', version: '2.1.0', ready: true, root: this.root, activeJobId: this.active };
+      case 'health': return { name: 'NTE Scrapper', version: '2.2.0', ready: true, root: this.root, activeJobId: this.active };
+      case 'drive-settings': return { folder: await readDriveFolder(this.root) };
+      case 'drive-configure': return { folder: await saveDriveFolder(this.root, args.folder) };
+      case 'drive-retry': return this.retryDrive(args);
       case 'inspect': return this.inspect(args);
       case 'start': return this.start(args);
       case 'status': return this.status(args);

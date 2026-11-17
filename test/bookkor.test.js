@@ -7,9 +7,18 @@ import { parseBookkorCatalog, readBookkorRenderedText } from '../src/bookkor.js'
 
 const slug = '테스트-작품';
 const url = 'https://010.bookkor.com/' + encodeURIComponent(slug);
-function fixture(rows) {
-  return `<script data-page="app" type="application/json">${JSON.stringify({ component: 'contents/List', props: { content: { reader: 'novel' }, comic: { id: 10, slug, title: '테스트 작품', author: '테스트 작가' }, episodes: rows } })}</script>`;
+function fixture(rows, extra = {}) {
+  return `<script data-page="app" type="application/json">${JSON.stringify({ component: 'contents/List', props: { content: { reader: 'novel' }, comic: { id: 10, slug, title: '테스트 작품', author: '테스트 작가' }, episodes: rows, ...extra } })}</script>`;
 }
+test('a newest-ten preview cannot pass as the complete 298-episode catalog', () => {
+  const rows = Array.from({ length: 298 }, (_, i) => [298 - i, `${298 - i}화 제목`, `10-ep-book-${298 - i}`]);
+  const html = fixture(rows.slice(0, 10), { episodesTotal: 298, first: { slug: '10-ep-book-1' } });
+  assert.equal(parseBookkorCatalog(html, url).complete, false);
+  assert.throws(() => parseBookkorCatalog(html, url, rows.slice(0, 10)), /전체 목록 확인 실패/);
+  const full = parseBookkorCatalog(html, url, rows);
+  assert.equal(full.complete, true);
+  assert.deepEqual(full.chapters.map(chapter => chapter.number), Array.from({ length: 298 }, (_, i) => i + 1));
+});
 test('Bookkor Korean/encoded and episode URLs resolve to the same stable source identity', () => {
   const a = normalizeUrl('https://010.bookkor.com/테스트-작품/10-ep-book-1?x=2#top');
   const b = normalizeUrl(url);

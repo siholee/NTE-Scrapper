@@ -2,7 +2,7 @@ import { load } from 'cheerio';
 import { chromium } from 'playwright';
 import path from 'node:path';
 import { networkPacer } from './pacing.js';
-import { isMarumaru, parseMarumaruList } from './marumaru.js';
+import { isMarumaru, loadMarumaruCatalog } from './marumaru.js';
 import { isBookkor, normalizeBookkorUrl, parseBookkorCatalog, readBookkorRenderedText } from './bookkor.js';
 
 export const EXAMPLE_URL = 'https://toki35.com/novel/63829';
@@ -88,11 +88,20 @@ export async function fetchText(url, { signal, accept = 'text/html', retry = 2, 
 export async function loadCatalog(url, { signal, delayMs, reader, onProgress = () => {} } = {}) {
   const normalized = normalizeUrl(url);
   if (isMarumaru(new URL(normalized.url).hostname)) {
-    if (!reader) throw new Error('마루마루 작품 목록을 열려면 Chrome 또는 Edge가 필요합니다.');
-    return reader.readMarumaruCatalog(normalized, { signal, delayMs, onProgress });
+    return loadMarumaruCatalog(normalized, {
+      fetchPage: address => fetchText(address, { signal, delayMs, accept: 'application/json' }),
+      onProgress,
+    });
   }
   if (normalized.source === 'bookkor') {
-    const book = parseBookkorCatalog(await fetchText(normalized.url, { signal, delayMs }), normalized.url);
+    const html = await fetchText(normalized.url, { signal, delayMs });
+    let book = parseBookkorCatalog(html, normalized.url);
+    if (!book.complete) {
+      if (!reader) throw new Error('Bookkor 전체 회차를 불러오려면 Chrome 또는 Edge가 필요합니다.');
+      onProgress(`첫 응답 ${book.chapters.length}/${book.expectedTotal}개 확인. 이전 회차를 불러옵니다.`);
+      const rows = await reader.readBookkorExpandedRows(book, { signal, delayMs });
+      book = parseBookkorCatalog(html, normalized.url, rows);
+    }
     onProgress(`회차 목록 ${book.chapters.length}개 확인`);
     return book;
   }
@@ -128,7 +137,7 @@ export function chapterUrl(book, chapter) {
 }
 
 export class BrowserReader {
-  constructor(dataDir) { this.profile = path.join(dataDir, 'browser-profile'); this.context = null; this.page = null; this.launching = null; this.browser = null; }
+  constructor(dataDir) { this.profile = path.join(dataDir, 'browser-profile'); this.context = null; this.page = null; this.launching = null; }
   async open() {
     if (this.context && this.page && !this.page.isClosed()) return this.page;
     if (this.launching) return this.launching;
@@ -151,51 +160,32 @@ export class BrowserReader {
     }
     throw new Error(`Chrome 또는 Edge를 실행하지 못했습니다. 브라우저가 설치되어 있는지 확인해주세요. ${errors[0]?.split('\n')[0] || ''}`);
   }
-  async readMarumaruCatalog(book, { signal, delayMs, onProgress }) {
-    let launchError;
-    for (const channel of ['chrome', 'msedge', undefined]) {
-      try {
-        this.browser = await chromium.launch({ channel, headless: false });
-        break;
-      } catch (error) { launchError = error; }
-    }
-    if (!this.browser) throw launchError;
-    this.context = await this.browser.newContext({ acceptDownloads: false });
-    this.page = await this.context.newPage();
-    this.context.on('page', page => {
-      if (page !== this.page) page.close().catch(() => {});
-    });
+  async readBookkorExpandedRows(book, { signal, delayMs }) {
     const page = await this.open();
-    const chapters = new Map();
-    const visited = new Set();
-    const firstPage = new URL(book.url);
-    firstPage.searchParams.set('order', 'desc');
-    let url = firstPage.href;
-    let catalog;
-    while (url) {
-      if (visited.has(url) || visited.size >= 500) throw new Error('마루마루 다음 목록 페이지가 반복됩니다.');
-      visited.add(url);
-      await networkPacer.take(signal, delayMs);
-      const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      if (response?.status() >= 400) throw new Error(`마루마루 목록 HTTP ${response.status()}`);
-      try {
-        await page.locator('main .ep-list-v2 a.ep-row-v2-link').first().waitFor({ state: 'attached', timeout: 15000 });
-      } catch {
-        throw new Error(`마루마루 회차 목록을 열지 못했습니다. 브라우저에 표시된 페이지: ${await page.title()}`);
-      }
-      signal?.throwIfAborted();
-      const result = parseMarumaruList(await page.content(), book, page.url());
-      catalog ??= result;
-      if (catalog.total !== result.total || catalog.title !== result.title) throw new Error('수집 도중 마루마루 회차 목록이 변경됐습니다. 이어받기를 눌러 목록을 다시 확인해주세요.');
-      for (const chapter of result.chapters) chapters.set(chapter.id, chapter);
-      onProgress(`목록 ${chapters.size}/${catalog.total}개 확인`);
-      url = result.next;
+    await networkPacer.take(signal, delayMs);
+    const initial = await page.goto(book.url, { waitUntil: 'domcontentloaded', timeout: 35000 });
+    if (initial?.status() >= 400) throw new Error(`Bookkor 목록 HTTP ${initial.status()}`);
+    if (new URL(page.url()).origin !== book.origin) throw new Error('Bookkor 목록이 다른 사이트로 이동했습니다.');
+    const more = page.getByRole('button', { name: '이전 회차 더 보기', exact: true });
+    await more.waitFor({ timeout: 15000 });
+    await networkPacer.take(signal, delayMs);
+    const [response] = await Promise.all([
+      page.waitForResponse(response => {
+        const url = new URL(response.url());
+        return url.origin === book.origin && url.pathname === new URL(book.url).pathname &&
+          response.request().method() === 'GET' &&
+          response.request().headers()['x-inertia-partial-data']?.split(',').includes('episodesAll');
+      }, { timeout: 30000 }),
+      more.click({ timeout: 12000 }),
+    ]);
+    signal?.throwIfAborted();
+    if (!response.ok()) throw new Error(`Bookkor 전체 목록 HTTP ${response.status()}`);
+    const data = await response.json();
+    const rows = data.props?.episodesAll?.rows;
+    if (data.component !== 'contents/List' || !Array.isArray(rows)) {
+      throw new Error('Bookkor의 이전 회차 응답에서 전체 목록을 찾지 못했습니다.');
     }
-    const ordered = [...chapters.values()].sort((a, b) => a.number - b.number);
-    if (ordered.length !== catalog.total || ordered.some((chapter, index) => chapter.number !== index + 1)) {
-      throw new Error(`마루마루 목록에 누락 또는 중복이 있습니다. 확인한 목록 항목 ${ordered.length}/${catalog.total}개`);
-    }
-    return { ...book, source: 'marumaru', title: catalog.title, author: catalog.author, description: catalog.description, chapters: ordered };
+    return rows;
   }
   async navigate(book, chapter, { signal, delayMs } = {}) {
     const page = await this.open();
@@ -293,9 +283,8 @@ export class BrowserReader {
     }
   }
   async close() {
-    const { context, browser } = this;
-    this.context = null; this.browser = null; this.page = null;
-    if (browser) await browser.close().catch(() => {});
-    else if (context) await context.close().catch(() => {});
+    const context = this.context;
+    this.context = null; this.page = null;
+    if (context) await context.close().catch(() => {});
   }
 }

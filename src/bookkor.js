@@ -13,16 +13,20 @@ export function normalizeBookkorUrl(url) {
   return { url: url.href, origin: url.origin, source: 'bookkor', slug, id: 'bk-' + createHash('sha256').update(slug).digest('hex').slice(0, 12) };
 }
 
-export function parseBookkorCatalog(html, url) {
+export function parseBookkorCatalog(html, url, expandedRows) {
   const normalized = normalizeBookkorUrl(new URL(url));
   const $ = load(html);
   let page;
   try { page = JSON.parse($('script[data-page="app"][type="application/json"]').text()); }
   catch { throw new Error('Bookkor 작품 데이터를 읽지 못했습니다. 접속 상태 또는 사이트 구조를 확인해주세요.'); }
-  const { comic, episodes, content } = page.props || {};
-  if (page.component !== 'contents/List' || content?.reader !== 'novel' || !comic?.title || comic.slug !== normalized.slug || !Array.isArray(episodes) || !episodes.length) throw new Error('Bookkor 소설의 전체 회차 목록을 찾지 못했습니다.');
+  const { comic, episodes, episodesTotal, first, content } = page.props || {};
+  if (page.component !== 'contents/List' || content?.reader !== 'novel' || !comic?.title || comic.slug !== normalized.slug || !Array.isArray(episodes) || !episodes.length) throw new Error('Bookkor 소설의 회차 목록을 찾지 못했습니다.');
+  const rows = expandedRows ?? episodes;
+  if (!Array.isArray(rows) || !rows.length) throw new Error('Bookkor 전체 회차 목록 응답이 비어 있습니다.');
+  const expectedTotal = episodesTotal ?? episodes.length;
+  if (!Number.isSafeInteger(expectedTotal) || expectedTotal < 1 || rows.length > expectedTotal) throw new Error('Bookkor의 총 회차 수를 확인할 수 없습니다.');
   const byId = new Map();
-  for (const row of episodes) {
+  for (const row of rows) {
     if (!Array.isArray(row) || row.length < 3) throw new Error('Bookkor 회차 형식이 변경되었습니다.');
     const [rawId, rawTitle, episodeSlug] = row;
     const id = String(rawId), title = String(rawTitle || '').trim();
@@ -35,7 +39,9 @@ export function parseBookkorCatalog(html, url) {
   // Split episodes such as 314-p1 / 314-p2 have the same chapter number,
   // but distinct IDs. Keep both and order by their original publication IDs.
   const chapters = [...byId.values()].sort((a, b) => a.number - b.number || a.id.localeCompare(b.id, 'en', { numeric: true }));
-  return { ...normalized, title: String(comic.title).trim(), author: comic.author?.trim() || '작자 미상', description: comic.description ? load(String(comic.description)).text().trim() : '', seriesId: String(comic.id), chapters };
+  const complete = chapters.length === expectedTotal && (!first?.slug || chapters.some(chapter => chapter.slug === first.slug));
+  if (expandedRows && !complete) throw new Error(`Bookkor 전체 목록 확인 실패 (${chapters.length}/${expectedTotal}개). 첫 회차나 일부 목록이 누락됐습니다.`);
+  return { ...normalized, title: String(comic.title).trim(), author: comic.author?.trim() || '작자 미상', description: comic.description ? load(String(comic.description)).text().trim() : '', seriesId: String(comic.id), chapters, expectedTotal, complete };
 }
 
 // Executed in the ordinary browser after the site's own rendering code runs.

@@ -8,6 +8,10 @@
     <button id="start" type="submit">확인</button>
   </div></form>
 <div class="hint">7~3600초 · 저장된 회차는 이어받기</div>
-<section aria-live="polite"><div class="status-head"><strong id="title">수집 준비</strong><span id="count"></span></div><progress id="progress" max="1" value="0"></progress><p id="message">주소를 입력하고 확인을 눌러주세요.</p><div class="actions"><button id="resume" hidden>이어받기 / 계속</button><button id="stop" hidden>중단</button><button id="folder" class="secondary">저장 폴더 열기</button></div></section>
+<div class="drive-settings">
+  <div class="actions"><button id="drive-select" class="secondary" type="button">Google Drive 동기화 폴더 선택</button><button id="drive-clear" class="secondary" type="button" hidden>해제</button></div>
+  <p id="drive-folder" class="hint">선택하면 새 작업의 EPUB을 Google Drive for desktop 동기화 폴더에 복사합니다.</p>
+</div>
+<section aria-live="polite"><div class="status-head"><strong id="title">수집 준비</strong><span id="count"></span></div><progress id="progress" max="1" value="0"></progress><p id="message">주소를 입력하고 확인을 눌러주세요.</p><p id="drive-message" hidden></p><div class="actions"><button id="resume" hidden>이어받기 / 계속</button><button id="stop" hidden>중단</button><button id="folder" class="secondary">저장 폴더 열기</button><button id="drive-retry" class="secondary" hidden>EPUB 복사 재시도</button></div></section>
 <p class="footer">Bookkor · /novel/ 형식 지원<br>Chrome 또는 Edge 필요. 인증 화면이 나오면 브라우저에서 직접 완료해주세요.<br>창을 닫아도 수집은 계속되며, 중단 버튼으로 멈출 수 있습니다.</p>
 </main><script src="renderer.js"></script></body></html>
